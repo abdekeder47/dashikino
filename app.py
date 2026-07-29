@@ -6288,5 +6288,41 @@ def claim_bingo():
             "success": False,
             "message": "ቦርድዎ ገና አልሞላም! ተጨማሪ ቁጥሮች እስኪወጡ ይጠብቁ።"
         })
+import time
+
+# የጋራ የቢንጎ Live ኳስ ማውጫ (በሁሉም ስልክ ላይ ፍጹም አንድ አይነት እንዲሆን)
+@app.route('/api/bingo/live')
+def get_bingo_live():
+    # የአሁኑን ትክክለኛ ሰዓት በሰኮንድ ማግኘት (Global Epoch Time)
+    current_time = int(time.time())
+    
+    # ጨዋታው በየ 3 ሰከንዱ አንድ ቁጥር እንዲያወጣ ማድረግ
+    # (በዚህ ስሌት ምክንያት በየትኛውም ስልክ እና በየትኛውም ሰዓት ላይ የሚታየው ኳስ አንድ እና እኩል ይሆናል)
+    round_duration = 3 
+    total_balls = 75
+    
+    elapsed_seconds = current_time % (round_duration * total_balls)
+    step = elapsed_seconds // round_duration
+    
+    # የቁጥሮቹን ቅደም ተከተል በየዕለቱ/በየሰዓቱ እንዳይቀያየር በቋሚ Seed ማቀናጀት
+    # (በየ 5 ደቂቃው አዲስ የቁጥር ቅደም ተከተል ይፈጠራል)
+    seed_key = current_time // 300
+    random.seed(seed_key)
+    
+    all_numbers = list(range(1, 76))
+    random.shuffle(all_numbers)
+    
+    drawn = all_numbers[:step + 1]
+    current = drawn[-1] if drawn else None
+    
+    # የሚቀጥለው ቁጥር እስከሚወጣ ድረስ የሚቀረው ሰኮንድ
+    next_in = round_duration - (elapsed_seconds % round_duration)
+
+    return jsonify({
+        "current_number": current,
+        "drawn_numbers": drawn,
+        "total_drawn": len(drawn),
+        "next_in_seconds": next_in
+    })
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
