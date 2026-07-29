@@ -1,39 +1,539 @@
-from flask import Flask, render_template_string, request, jsonify, session, redirect, url_for
-from werkzeug.security import generate_password_hash, check_password_hash
 import os
 import random
 import json
+from flask import Flask, jsonify, request, session, redirect, url_for, render_template_string
+from flask_cors import CORS
+from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'ethio_bet_secure_key_v18')
+# ለሴሽን ማከማቻ የሚያገለግል ምስጢራዊ ቁልፍ
+app.secret_key = os.environ.get('SECRET_KEY', 'super-secret-key-change-this')
+CORS(app)
 
-users_db = {
-    "0997384093": {
-        "password": generate_password_hash("adminpassword"), 
-        "balance": 1000.00, 
-        "is_admin": True
-    }
-}
-
+# ==========================================
+# 1. ዳታቤዝ እና ግሎባል ተለዋዋጮች (GLOBAL DATA STRUCTURES)
+# ==========================================
+users_db = {}
+global_bet_history = []
 deposit_requests = []
 withdraw_requests = []
-global_bet_history = []
-aviator_history_list = ["2.10x", "1.45x", "3.20x"]
+
+aviator_history_list = ["1.15x", "2.40x", "1.02x", "5.10x", "1.85x"]
 keno_recent_draws = []
 
+# የቢንጎ ካርዶች መረጃ
+BINGO_CARDS = {
+    1: [[1, 16, 31, 46, 61], [2, 17, 32, 47, 62], [3, 18, 0, 48, 63], [4, 19, 34, 49, 64], [5, 20, 35, 50, 65]],
+    2: [[6, 21, 36, 51, 66], [7, 22, 37, 52, 67], [8, 23, 0, 53, 68], [9, 24, 39, 54, 69], [10, 25, 40, 55, 70]],
+}
+
+# የቢንጎ ክፍሎች (Bingo Rooms)
+bingo_rooms = {
+    10: {"players": {}, "status": "WAITING", "pot": 0.0},
+    20: {"players": {}, "status": "WAITING", "pot": 0.0},
+    50: {"players": {}, "status": "WAITING", "pot": 0.0},
+    100: {"players": {}, "status": "WAITING", "pot": 0.0}
+}
+
+# ነባሪ የአድሚን አካውንት (Default Admin)
+users_db['0900000000'] = {
+    "password": generate_password_hash("admin123"),
+    "balance": 10000.00,
+    "is_admin": True
+}
+
 # ==========================================
-# BINGO GENERATOR & STATE MANAGEMENT
+# 2. የቴምፕሌት ገጾች (HTML TEMPLATES)
 # ==========================================
-def generate_bingo_card(card_id):
-    random.seed(card_id)
-    card = {
-        'B': random.sample(range(1, 16), 5),
-        'I': random.sample(range(16, 31), 5),
-        'N': random.sample(range(31, 46), 5),
-        'G': random.sample(range(46, 61), 5),
-        'O': random.sample(range(61, 76), 5)
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="am">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashikino Gaming Platform</title>
+</head>
+<body>
+    <h1>እንኳን ወደ Dashikino በደህና መጡ!</h1>
+</body>
+</html>
+"""
+
+ADMIN_HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="am">
+<head>
+    <meta charset="UTF-8">
+    <title>Admin Dashboard</title>
+</head>
+<body>
+    <h2>የአድሚን መቆጣጠሪያ ገጽ (Admin Dashboard)</h2>
+    <h3>የዲፖዚት ጥያቄዎች</h3>
+    <ul>
+        {% for req in deposit_requests %}
+        <li>{{ req.phone }} - {{ req.amount }} ETB 
+            <a href="/admin/approve_deposit/{{ loop.index0 }}">አጽድቅ (Approve)</a> | 
+            <a href="/admin/reject_deposit/{{ loop.index0 }}">ሰርዝ (Reject)</a>
+        </li>
+        {% else %}
+        <li>ምንም የሚጠበቅ የዲፖዚት ጥያቄ የለም።</li>
+        {% endfor %}
+    </ul>
+    <h3>የብር ማውጣት ጥያቄዎች</h3>
+    <ul>
+        {% for req in withdraw_requests %}
+        <li>{{ req.phone }} - {{ req.amount }} ETB ({{ req.method }} / {{ req.account }}) 
+            <a href="/admin/approve_withdraw/{{ loop.index0 }}">አጽድቅ (Approve)</a> | 
+            <a href="/admin/reject_withdraw/{{ loop.index0 }}">ሰርዝ (Reject)</a>
+        </li>
+        {% else %}
+        <li>ምንም የሚጠበቅ የብር ማውጣት ጥያቄ የለም።</li>
+        {% endfor %}
+    </ul>
+</body>
+</html>
+"""
+
+# ==========================================
+# 3. ዋና የገጽ መንገድ (MAIN ROUTE)
+# ==========================================
+@app.route('/')
+def index():
+    return render_template_string(HTML_TEMPLATE)
+
+# ==========================================
+# 4. የመግቢያ እና የምዝገባ መንገዶች (AUTH ROUTES)
+# ==========================================
+@app.route('/register', methods=['POST'])
+def register():
+    phone = request.form.get('phone')
+    password = request.form.get('password')
+
+    if not phone or not password:
+        return jsonify({"success": False, "message": "እባክዎን ስልክ ቁጥር እና ፓስወርድ ያስገቡ!"})
+
+    if phone in users_db:
+        return jsonify({"success": False, "message": "ይህ ስልክ ቁጥር ቀደም ብሎ ተመዝግቧል!"})
+
+    users_db[phone] = {
+        "password": generate_password_hash(password),
+        "balance": 0.00,
+        "is_admin": False
     }
-    card['N'][2] = "FREE"  # Center FREE space
+    session['user'] = phone
+    return jsonify({"success": True, "message": "ምዝገባው ተሳክቷል!"})
+
+@app.route('/login', methods=['POST'])
+def login():
+    phone = request.form.get('phone')
+    password = request.form.get('password')
+
+    if not phone or not password:
+        return jsonify({"success": False, "message": "እባክዎን ስልክ ቁጥር እና ፓስወርድ ያስገቡ!"})
+
+    user = users_db.get(phone)
+    if not user or not check_password_hash(user['password'], password):
+        return jsonify({"success": False, "message": "የተሳሳተ ስልክ ቁጥር ወይም ፓስወርድ!"})
+
+    session['user'] = phone
+    return jsonify({"success": True, "message": "በስኬት ገብተዋል!"})
+
+@app.route('/logout')
+def logout():
+    session.pop('user', None)
+    return redirect(url_for('index'))
+
+# ==========================================
+# 5. የጨዋታ እና የውርርድ መንገዶች (BETTING & GAMES)
+# ==========================================
+@app.route('/place_bet', methods=['POST'])
+def place_bet():
+    if 'user' not in session:
+        return jsonify({"success": False, "message": "እባክዎን አስቀድመው ይግቡ!"})
+
+    phone = session['user']
+    user = users_db.get(phone)
+    
+    try:
+        amount = float(request.form.get('amount', 0))
+    except ValueError:
+        return jsonify({"success": False, "message": "የተሳሳተ የብር መጠን!"})
+
+    if amount < 5.00 or amount > 12000.00:
+        return jsonify({"success": False, "message": "መደብ ከ5.00 እስከ 12,000.00 ETB መሆን አለበት!"})
+
+    if user['balance'] < amount:
+        return jsonify({"success": False, "message": "በቂ የሂሳብ መጠን የለዎትም!"})
+
+    user['balance'] -= amount
+    return jsonify({"success": True, "new_balance": user['balance']})
+
+@app.route('/cancel_bet', methods=['POST'])
+def cancel_bet():
+    if 'user' not in session:
+        return jsonify({"success": False, "message": "እባክዎን አስቀድመው ይግቡ!"})
+
+    phone = session['user']
+    user = users_db.get(phone)
+
+    try:
+        amount = float(request.form.get('amount', 0))
+    except ValueError:
+        return jsonify({"success": False, "message": "የተሳሳተ የብር መጠን!"})
+
+    user['balance'] += amount
+    return jsonify({"success": True, "new_balance": user['balance']})
+
+@app.route('/cashout', methods=['POST'])
+def cashout():
+    if 'user' not in session:
+        return jsonify({"success": False, "message": "እባክዎን አስቀድመው ይግቡ!"})
+
+    phone = session['user']
+    user = users_db.get(phone)
+
+    game = request.form.get('game', 'Aviator')
+    try:
+        bet_amount = float(request.form.get('bet_amount', 0))
+        win_amount = float(request.form.get('win_amount', 0))
+    except ValueError:
+        return jsonify({"success": False, "message": "የተሳሳተ የብር መጠን!"})
+
+    result_info = request.form.get('result_info', '')
+
+    user['balance'] += win_amount
+    global_bet_history.append({
+        "phone": phone,
+        "game": game,
+        "bet_amount": bet_amount,
+        "win_amount": win_amount,
+        "result_info": result_info
+    })
+
+    return jsonify({"success": True, "new_balance": user['balance']})
+
+@app.route('/record_loss', methods=['POST'])
+def record_loss():
+    if 'user' not in session:
+        return jsonify({"success": False, "message": "እባክዎን አስቀድመው ይግቡ!"})
+
+    phone = session['user']
+    game = request.form.get('game', 'Aviator')
+    
+    try:
+        bet_amount = float(request.form.get('bet_amount', 0))
+    except ValueError:
+        bet_amount = 0.0
+
+    result_info = request.form.get('result_info', '')
+
+    global_bet_history.append({
+        "phone": phone,
+        "game": game,
+        "bet_amount": bet_amount,
+        "win_amount": 0.0,
+        "result_info": result_info
+    })
+
+    return jsonify({"success": True})
+
+@app.route('/user_history')
+def user_history():
+    if 'user' not in session:
+        return jsonify({"history": []})
+
+    phone = session['user']
+    user_bets = [h for h in reversed(global_bet_history) if h['phone'] == phone]
+    return jsonify({"history": user_bets})
+
+# --- የኤቪዬተር እና ኬኖ ዳታዎች ---
+@app.route('/aviator_history_data')
+def aviator_history_data():
+    return jsonify({"history": aviator_history_list})
+
+@app.route('/add_aviator_history', methods=['POST'])
+def add_aviator_history():
+    mult = request.form.get('mult')
+    if mult:
+        aviator_history_list.insert(0, mult)
+        if len(aviator_history_list) > 15:
+            aviator_history_list.pop()
+    return jsonify({"success": True})
+
+@app.route('/draw_keno_numbers')
+def draw_keno_numbers():
+    drawn = random.sample(range(1, 81), 20)
+    return jsonify({"drawn": drawn})
+
+@app.route('/update_keno_history', methods=['POST'])
+def update_keno_history():
+    draws_json = request.form.get('draws')
+    if draws_json:
+        try:
+            draws = json.loads(draws_json)
+            keno_recent_draws.insert(0, draws)
+            if len(keno_recent_draws) > 3:
+                keno_recent_draws.pop()
+        except Exception:
+            pass
+    return jsonify({"recent": keno_recent_draws})
+
+# ==========================================
+# 6. የቢንጎ ጨዋታ መንገዶች (BINGO ROUTES)
+# ==========================================
+@app.route('/join_bingo', methods=['POST'])
+def join_bingo():
+    if 'user' not in session:
+        return jsonify({"success": False, "message": "እባክዎን አስቀድመው ይግቡ!"})
+
+    phone = session['user']
+    user = users_db.get(phone)
+
+    try:
+        stake = int(request.form.get('stake', 10))
+        card_ids = json.loads(request.form.get('card_ids', '[]'))
+    except Exception:
+        return jsonify({"success": False, "message": "የተሳሳተ መረጃ!"})
+
+    if stake not in bingo_rooms:
+        return jsonify({"success": False, "message": "የተሳሳተ የቢንጎ ክፍል!"})
+
+    total_cost = stake * len(card_ids)
+    if user['balance'] < total_cost:
+        return jsonify({"success": False, "message": "በቂ የሂሳብ መጠን የለዎትም!"})
+
+    user['balance'] -= total_cost
+    room = bingo_rooms[stake]
+    
+    if phone not in room['players']:
+        room['players'][phone] = []
+
+    cards_payload = []
+    for cid in card_ids:
+        if cid in BINGO_CARDS:
+            room['players'][phone].append(cid)
+            cards_payload.append({'id': cid, 'card': BINGO_CARDS[cid]})
+
+    room['pot'] += total_cost
+
+    return jsonify({
+        "success": True,
+        "new_balance": user['balance'],
+        "cards": cards_payload
+    })
+
+@app.route('/cancel_bingo', methods=['POST'])
+def cancel_bingo():
+    if 'user' not in session:
+        return jsonify({"success": False, "message": "እባክዎን አስቀድመው ይግቡ!"})
+
+    phone = session['user']
+    user = users_db.get(phone)
+
+    try:
+        stake = int(request.form.get('stake', 10))
+        card_count = int(request.form.get('card_count', 1))
+    except Exception:
+        return jsonify({"success": False, "message": "የተሳሳተ መረጃ!"})
+
+    room = bingo_rooms.get(stake)
+    if not room:
+        return jsonify({"success": False, "message": "ክፍሉ አልተገኘም!"})
+
+    refund_amount = stake * card_count
+    user['balance'] += refund_amount
+
+    if phone in room['players']:
+        del room['players'][phone]
+
+    room['pot'] = max(0.0, room['pot'] - refund_amount)
+
+    return jsonify({
+        "success": True,
+        "message": "ቢንጎው በስኬት ተሰርዟል! ብርዎ ተመልሷል።",
+        "new_balance": user['balance']
+    })
+
+@app.route('/bingo_room_status')
+def bingo_room_status():
+    try:
+        stake = int(request.args.get('stake', 10))
+    except ValueError:
+        stake = 10
+
+    room = bingo_rooms.get(stake, {"players": {}, "status": "WAITING", "pot": 0.0})
+    player_count = len(room['players'])
+
+    return jsonify({
+        "player_count": player_count,
+        "status": room['status'],
+        "pot": room['pot']
+    })
+
+@app.route('/claim_bingo', methods=['POST'])
+def claim_bingo():
+    if 'user' not in session:
+        return jsonify({"success": False, "message": "እባክዎን አስቀድመው ይግቡ!"})
+
+    phone = session['user']
+    user = users_db.get(phone)
+
+    try:
+        stake = int(request.form.get('stake', 10))
+        card_id = int(request.form.get('card_id', 0))
+    except Exception:
+        return jsonify({"success": False, "message": "የተሳሳተ መረጃ!"})
+
+    room = bingo_rooms.get(stake)
+    if not room:
+        return jsonify({"success": False, "message": "ክፍሉ አልተገኘም!"})
+
+    win_amount = room['pot'] if room['pot'] > 0 else (stake * 2.0)
+    user['balance'] += win_amount
+
+    global_bet_history.append({
+        "phone": phone,
+        "game": f"Bingo ({stake} ETB Room)",
+        "bet_amount": stake,
+        "win_amount": win_amount,
+        "result_info": f"Card #{card_id} WON"
+    })
+
+    room['pot'] = 0.0
+    room['players'] = {}
+
+    return jsonify({
+        "success": True,
+        "win_amount": win_amount,
+        "new_balance": user['balance']
+    })
+
+# ==========================================
+# 7. ዲፖዚት እና ዊዝድሮው (DEPOSIT & WITHDRAWAL)
+# ==========================================
+@app.route('/deposit', methods=['POST'])
+def deposit():
+    if 'user' not in session:
+        return jsonify({"success": False, "message": "እባክዎን አስቀድመው ይግቡ!"})
+
+    phone = session['user']
+    try:
+        amount = float(request.form.get('amount', 0))
+    except ValueError:
+        return jsonify({"success": False, "message": "የተሳሳተ የብር መጠን!"})
+
+    if amount <= 0:
+        return jsonify({"success": False, "message": "ትክክለኛ የብር መጠን ያስገቡ!"})
+
+    deposit_requests.append({
+        "phone": phone,
+        "amount": amount
+    })
+
+    return jsonify({"success": True, "message": "የዲፖዚት ጥያቄዎ ለትክክለኛነቱ ማረጋገጫ ተልኳል! አድሚኑ ሲያጸድቀው ገቢ ይሆናል።"})
+
+@app.route('/withdraw', methods=['POST'])
+def withdraw():
+    if 'user' not in session:
+        return jsonify({"success": False, "message": "እባክዎን አስቀድመው ይግቡ!"})
+
+    phone = session['user']
+    user = users_db.get(phone)
+
+    method = request.form.get('method')
+    account = request.form.get('account')
+    try:
+        amount = float(request.form.get('amount', 0))
+    except ValueError:
+        return jsonify({"success": False, "message": "የተሳሳተ የብር መጠን!"})
+
+    if amount <= 0:
+        return jsonify({"success": False, "message": "ትክክለኛ የብር መጠን ያስገቡ!"})
+
+    if user['balance'] < amount:
+        return jsonify({"success": False, "message": "በቂ የሂሳብ መጠን የለዎትም!"})
+
+    user['balance'] -= amount
+    withdraw_requests.append({
+        "phone": phone,
+        "account": account,
+        "method": method,
+        "amount": amount
+    })
+
+    return jsonify({"success": True, "message": "የማውጣት ጥያቄዎ ተልኳል! አድሚኑ በቅርቡ ይልካልዎታል።"})
+
+# ==========================================
+# 8. የአድሚን መቆጣጠሪያ (ADMIN DASHBOARD)
+# ==========================================
+@app.route('/admin')
+def admin():
+    if 'user' not in session:
+        return redirect(url_for('index'))
+
+    phone = session['user']
+    user = users_db.get(phone, {})
+    if not user.get('is_admin', False):
+        return redirect(url_for('index'))
+
+    return render_template_string(
+        ADMIN_HTML_TEMPLATE,
+        deposit_requests=deposit_requests,
+        withdraw_requests=withdraw_requests
+    )
+
+@app.route('/admin/approve_deposit/<int:index>')
+def approve_deposit(index):
+    if 'user' not in session or not users_db.get(session['user'], {}).get('is_admin', False):
+        return redirect(url_for('index'))
+
+    if 0 <= index < len(deposit_requests):
+        req = deposit_requests.pop(index)
+        target_user = users_db.get(req['phone'])
+        if target_user:
+            target_user['balance'] += req['amount']
+
+    return redirect(url_for('admin'))
+
+@app.route('/admin/reject_deposit/<int:index>')
+def reject_deposit(index):
+    if 'user' not in session or not users_db.get(session['user'], {}).get('is_admin', False):
+        return redirect(url_for('index'))
+
+    if 0 <= index < len(deposit_requests):
+        deposit_requests.pop(index)
+
+    return redirect(url_for('admin'))
+
+@app.route('/admin/approve_withdraw/<int:index>')
+def approve_withdraw(index):
+    if 'user' not in session or not users_db.get(session['user'], {}).get('is_admin', False):
+        return redirect(url_for('index'))
+
+    if 0 <= index < len(withdraw_requests):
+        withdraw_requests.pop(index)
+
+    return redirect(url_for('admin'))
+
+@app.route('/admin/reject_withdraw/<int:index>')
+def reject_withdraw(index):
+    if 'user' not in session or not users_db.get(session['user'], {}).get('is_admin', False):
+        return redirect(url_for('index'))
+
+    if 0 <= index < len(withdraw_requests):
+        req = withdraw_requests.pop(index)
+        target_user = users_db.get(req['phone'])
+        if target_user:
+            target_user['balance'] += req['amount']
+
+    return redirect(url_for('admin'))
+
+# ==========================================
+# 9. አፕሊኬሽኑን ማስጀመሪያ (APP LAUNCH)
+# ==========================================
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=True)
     return card
 
 BINGO_CARDS = {i: generate_bingo_card(i) for i in range(1, 101)}
