@@ -6,7 +6,7 @@ import json
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'ethio_bet_secure_key_v18')
-@app.route('/google32f97bf68dfe6928.html')
+
 def google_verify():
     return "google-site-verification: google32f97bf68dfe6928.html"
 
