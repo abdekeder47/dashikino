@@ -6204,5 +6204,89 @@ def get_live_status():
         "is_crashed": crashed,
         "time_left": 15 - cycle
     })
+# ==========================================
+# 150 BOARDS STANDARD BINGO (1-75) SYSTEM
+# ==========================================
+BINGO_CARD_PRICE = 10.0
+BINGO_WIN_PERCENTAGE = 0.80
+
+def generate_bingo_board(board_id):
+    random.seed(board_id)
+    board = {
+        'B': random.sample(range(1, 16), 5),
+        'I': random.sample(range(16, 31), 5),
+        'N': random.sample(range(31, 46), 5),
+        'G': random.sample(range(46, 61), 5),
+        'O': random.sample(range(61, 76), 5)
+    }
+    board['N'][2] = "FREE"
+    return board
+
+@app.route('/api/bingo/board/<int:board_id>')
+def get_bingo_board(board_id):
+    if board_id < 1 or board_id > 150:
+        return jsonify({"error": "Board ID must be between 1 and 150"}), 400
+    return jsonify({
+        "board_id": board_id,
+        "grid": generate_bingo_board(board_id)
+    })
+
+@app.route('/api/bingo/live')
+def get_bingo_live():
+    current_time = int(time.time())
+    step = (current_time // 3) % 75
+    random.seed(current_time // 300)
+    all_numbers = list(range(1, 76))
+    random.shuffle(all_numbers)
+    
+    drawn = all_numbers[:step + 1]
+    current = drawn[-1] if drawn else None
+
+    return jsonify({
+        "current_number": current,
+        "drawn_numbers": drawn,
+        "total_drawn": len(drawn),
+        "next_in_seconds": 3 - (current_time % 3)
+    })
+
+@app.route('/api/bingo/claim', methods=['POST'])
+def claim_bingo():
+    data = request.json
+    phone = data.get('phone')
+    board_id = data.get('board_id')
+    
+    if phone not in users_db:
+        return jsonify({"success": False, "message": "እባክዎ በመጀመሪያ ይግቡ (Login)!"}), 400
+
+    grid = generate_bingo_board(int(board_id))
+    current_time = int(time.time())
+    step = (current_time // 3) % 75
+    random.seed(current_time // 300)
+    all_numbers = list(range(1, 76))
+    random.shuffle(all_numbers)
+    drawn_numbers = set(all_numbers[:step + 1])
+    
+    is_winner = True
+    for letter in ['B', 'I', 'N', 'G', 'O']:
+        for val in grid[letter]:
+            if val != "FREE" and val not in drawn_numbers:
+                is_winner = False
+                break
+        if not is_winner:
+            break
+
+    if is_winner:
+        reward = BINGO_CARD_PRICE * 150 * BINGO_WIN_PERCENTAGE
+        users_db[phone]['balance'] += reward
+        return jsonify({
+            "success": True,
+            "message": f"እንኳን ደስ አለዎት! BINGO አሸንፈዋል! {reward} ብር ባላንስዎ ላይ ተጨምሯል።",
+            "new_balance": users_db[phone]['balance']
+        })
+    else:
+        return jsonify({
+            "success": False,
+            "message": "ቦርድዎ ገና አልሞላም! ተጨማሪ ቁጥሮች እስኪወጡ ይጠብቁ።"
+        })
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
