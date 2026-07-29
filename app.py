@@ -1,4 +1,4 @@
-        <button onclick="switchGame('aviator')" id="btn-aviator" class="flex-1 py-2.5 rounded-lg font-bold bg-red-600 text-white shadow">✈️ Aviator</button>
+
         from flask import Flask, jsonify, request, render_template_string
 from flask_cors import CORS
 import random
