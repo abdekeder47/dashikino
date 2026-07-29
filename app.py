@@ -6181,5 +6181,28 @@ def reject_withdraw(req_id):
             users_db[phone]['balance'] += amount
     return redirect(url_for('admin'))
 
+# ==========================================
+# LIVE GAME STATE API (ለሁሉም ሰው እኩል እንዲሆን)
+# ==========================================
+import time
+
+@app.route('/api/live-status')
+def get_live_status():
+    current_timestamp = int(time.time())
+    cycle = current_timestamp % 15  # በየ 15 ሰከንዱ የሚደጋገም ዙር
+    
+    if cycle < 10:
+        multiplier = round(1.0 + (cycle * 0.25), 2)
+        crashed = False
+    else:
+        multiplier = round(1.0 + (10 * 0.25), 2)
+        crashed = True
+
+    return jsonify({
+        "timestamp": current_timestamp,
+        "aviator_multiplier": multiplier,
+        "is_crashed": crashed,
+        "time_left": 15 - cycle
+    })
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
