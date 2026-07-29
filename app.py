@@ -9,7 +9,7 @@ app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'ethio_bet_secure_key_v1
 
 users_db = {
     "0997384093": {
-        "password": generate_password_hash("adminpassword"), 
+        "password": generate_password_hash 
         "balance": 1000.00, 
         "is_admin": True
     }
